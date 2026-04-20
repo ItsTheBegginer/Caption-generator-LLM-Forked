@@ -1,12 +1,14 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import {
   Camera,
   Sparkles,
   Wand2,
   Upload,
   Download,
-  Copy,
   Check,
+  ShieldCheck,
+  ShieldAlert,
+  BookOpen,
 } from "lucide-react";
 
 const TONES = [
@@ -42,8 +44,6 @@ const TONES = [
   },
 ];
 
-const gradientBg =
-  "linear-gradient(135deg, rgba(102,126,234,1) 0%, rgba(118,75,162,1) 100%)";
 
 export default function Home() {
   const inputRef = useRef(null);
@@ -55,6 +55,31 @@ export default function Home() {
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState(null);
+  const [nsfwResult, setNsfwResult] = useState(null);
+  const [nsfwLoading, setNsfwLoading] = useState(false);
+  const [nsfwError, setNsfwError] = useState(null);
+  const [isStoryMode, setIsStoryMode] = useState(false);
+  const [storyFiles, setStoryFiles] = useState([]);
+  const [storyResult, setStoryResult] = useState(null);
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState(null);
+  const [displayedStory, setDisplayedStory] = useState("");
+
+  useEffect(() => {
+    if (storyResult?.story) {
+      let i = 0;
+      setDisplayedStory("");
+      const fullText = storyResult.story;
+      const interval = setInterval(() => {
+        setDisplayedStory(prev => prev + fullText.charAt(i));
+        i++;
+        if (i >= fullText.length) {
+          clearInterval(interval);
+        }
+      }, 40);
+      return () => clearInterval(interval);
+    }
+  }, [storyResult]);
 
   const step = useMemo(() => {
     if (!file) return 1;
@@ -62,7 +87,7 @@ export default function Home() {
     return 3;
   }, [file, tone]);
 
-  const apiBase = "https://huggingface.co/spaces/avatansh/caption-api";
+  const apiBase = "http://127.0.0.1:8000";
 
   const handleFile = (selected) => {
     if (!selected) return;
@@ -71,20 +96,46 @@ export default function Home() {
     setCaptions([]);
     setCopiedIndex(null);
     setError(null);
+    setNsfwResult(null);
+    setNsfwLoading(false);
+    setNsfwError(null);
     const url = URL.createObjectURL(selected);
     setPreview(url);
   };
 
   const onFileChange = (event) => {
-    const selected = event.target.files?.[0];
-    handleFile(selected);
+    const selected = Array.from(event.target.files);
+    if (!selected.length) return;
+    if (isStoryMode) {
+      handleStoryFiles(selected);
+    } else {
+      handleFile(selected[0]);
+    }
   };
 
   const onDrop = (event) => {
     event.preventDefault();
     setDragActive(false);
-    const selected = event.dataTransfer.files?.[0];
-    handleFile(selected);
+    const selected = Array.from(event.dataTransfer.files);
+    if (!selected.length) return;
+    if (isStoryMode) {
+      handleStoryFiles(selected);
+    } else {
+      handleFile(selected[0]);
+    }
+  };
+
+  const handleStoryFiles = (filesList) => {
+    if (!filesList || filesList.length === 0) return;
+    const valids = filesList.slice(0, 5);
+    setStoryFiles(valids);
+    setStoryResult(null);
+    setStoryError(null);
+    setDisplayedStory("");
+    setNsfwResult(null);
+    setCaptions([]);
+    const urls = valids.map(f => URL.createObjectURL(f));
+    setPreview(urls);
   };
 
   const onDragOver = (event) => {
@@ -94,19 +145,17 @@ export default function Home() {
 
   const onDragLeave = () => setDragActive(false);
 
-  const generateCaptions = async (nextTone = tone) => {
-    if (!file || !nextTone) return;
-    setLoading(true);
-    setCopiedIndex(null);
-    setError(null);
+  const generateStory = async () => {
+    if (storyFiles.length === 0) return;
+    setStoryLoading(true);
+    setStoryError(null);
+    setDisplayedStory("");
 
     try {
       const form = new FormData();
-      form.append("file", file);
-      form.append("tone", nextTone);
-      form.append("num_captions", "3");
-
-      const response = await fetch(`${apiBase}/generate`, {
+      storyFiles.forEach(f => form.append("files", f));
+      
+      const response = await fetch(`${apiBase}/generate-story`, {
         method: "POST",
         body: form,
       });
@@ -116,13 +165,79 @@ export default function Home() {
       }
 
       const data = await response.json();
-      setCaptions(data.styled || data.captions || []);
+      if (data.status === "success") {
+        setStoryResult(data);
+      } else {
+        throw new Error(data.message || "Failed to generate story.");
+      }
     } catch (err) {
-      setError(err.message || "Failed to generate captions.");
+      setStoryError(err.message || "Something went wrong.");
     } finally {
-      setLoading(false);
+      setStoryLoading(false);
     }
   };
+
+  const checkSafety = async () => {
+    if (!file) return;
+    setNsfwLoading(true);
+    setNsfwError(null);
+    
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      
+      const response = await fetch(`${apiBase}/check-nsfw`, {
+        method: "POST",
+        body: form,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status})`);
+      }
+
+      const data = await response.json();
+      if (data.status === "success") {
+        setNsfwResult(data.result);
+      } else {
+        throw new Error(data.message || "Failed to check image safety.");
+      }
+    } catch (err) {
+      setNsfwError(err.message || "Failed to determine image safety.");
+    } finally {
+      setNsfwLoading(false);
+    }
+  };
+
+  const generateCaptions = async (nextTone = tone) => {
+  if (!file || !nextTone) return;
+
+  setLoading(true);
+  setCopiedIndex(null);
+  setError(null);
+
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("tone", nextTone);
+    form.append("num_captions", "3");
+
+    const response = await fetch(`${apiBase}/generate`, {
+      method: "POST",
+      body: form,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Request failed (${response.status})`);
+    }
+
+    const data = await response.json();
+    setCaptions(data.styled || data.captions || []);
+  } catch (err) {
+    setError(err.message || "Failed to generate captions.");
+  } finally {
+    setLoading(false);
+  }
+};
 
   const onSelectTone = (value) => {
     setTone(value);
@@ -141,211 +256,176 @@ export default function Home() {
 
   const resetAll = () => {
     setFile(null);
+    setStoryFiles([]);
     setPreview(null);
     setTone(null);
     setCaptions([]);
     setCopiedIndex(null);
     setLoading(false);
     setError(null);
+    setNsfwResult(null);
+    setNsfwLoading(false);
+    setNsfwError(null);
+    setStoryResult(null);
+    setStoryError(null);
+    setDisplayedStory("");
     if (inputRef.current) inputRef.current.value = "";
   };
 
   const styles = {
-    page: {
-      minHeight: "100vh",
-      background: gradientBg,
-      padding: "48px 20px 72px",
-      fontFamily: '"Instrument Sans", "Helvetica Neue", sans-serif',
-      color: "#1a1a1a",
-    },
-    shell: {
-      maxWidth: 1200,
-      margin: "0 auto",
-    },
-    header: {
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      textAlign: "center",
-      marginBottom: 36,
-      color: "#fff",
-      animation: "fadeIn 0.8s ease",
-    },
-    title: {
-      fontFamily: '"Playfair Display", serif',
-      fontSize: "clamp(2.6rem, 4vw, 4rem)",
-      margin: 0,
-      letterSpacing: "-0.02em",
-    },
-    tagline: {
-      marginTop: 10,
-      fontSize: "1.05rem",
-      opacity: 0.88,
-      maxWidth: 620,
-    },
-    card: {
-      background: "rgba(255,255,255,0.92)",
-      borderRadius: 28,
-      boxShadow: "0 30px 70px rgba(34, 20, 64, 0.35)",
-      padding: "32px",
-      backdropFilter: "blur(18px)",
-    },
-    stepper: {
-      display: "flex",
-      gap: 16,
-      justifyContent: "center",
-      flexWrap: "wrap",
-      marginBottom: 24,
-    },
-    stepBadge: (active) => ({
-      padding: "8px 16px",
-      borderRadius: 999,
-      fontWeight: 600,
-      fontSize: "0.85rem",
-      background: active ? "rgba(102,126,234,0.2)" : "rgba(255,255,255,0.6)",
-      border: "1px solid rgba(255,255,255,0.7)",
-      color: active ? "#3c2a70" : "#5a5475",
-      boxShadow: active ? "0 8px 20px rgba(99,102,241,0.25)" : "none",
-      backdropFilter: "blur(12px)",
-      transition: "all 0.3s ease",
-    }),
-    uploadZone: {
-      border: dragActive
-        ? "2px solid rgba(118,75,162,0.8)"
-        : "2px dashed rgba(118,75,162,0.5)",
-      borderRadius: 24,
-      padding: "36px",
-      display: "grid",
-      placeItems: "center",
-      textAlign: "center",
-      background: dragActive
-        ? "rgba(118,75,162,0.12)"
-        : "rgba(255,255,255,0.6)",
-      transition: "all 0.3s ease",
-      cursor: "pointer",
-    },
-    circleIcon: {
-      width: 84,
-      height: 84,
-      borderRadius: "50%",
-      display: "grid",
-      placeItems: "center",
-      background: "rgba(118,75,162,0.15)",
-      marginBottom: 16,
-      boxShadow: "inset 0 0 20px rgba(118,75,162,0.2)",
-    },
-    grid: {
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
-      gap: 16,
-      marginTop: 24,
-    },
-    toneCard: (active) => ({
-      padding: 18,
-      borderRadius: 20,
-      border: active
-        ? "1px solid rgba(118,75,162,0.9)"
-        : "1px solid rgba(120,120,140,0.2)",
-      background: active ? "rgba(118,75,162,0.12)" : "rgba(255,255,255,0.85)",
-      boxShadow: active
-        ? "0 18px 30px rgba(118,75,162,0.25)"
-        : "0 10px 20px rgba(40, 20, 80, 0.08)",
-      transition: "all 0.25s ease",
-      cursor: "pointer",
-    }),
-    toneIcon: {
-      display: "inline-flex",
-      width: 40,
-      height: 40,
-      borderRadius: 12,
-      alignItems: "center",
-      justifyContent: "center",
-      background: "rgba(118,75,162,0.16)",
-      marginBottom: 12,
-    },
-    captionGrid: {
-      display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-      gap: 16,
-      marginTop: 24,
-    },
-    captionCard: {
-      padding: 18,
-      borderRadius: 18,
-      background: "rgba(255,255,255,0.95)",
-      border: "1px solid rgba(120,120,140,0.2)",
-      boxShadow: "0 12px 24px rgba(48, 30, 90, 0.12)",
-      display: "flex",
-      flexDirection: "column",
-      gap: 12,
-      minHeight: 160,
-      position: "relative",
-      overflow: "hidden",
-      animation: "fadeIn 0.5s ease",
-    },
-    captionIndex: {
-      fontWeight: 700,
-      color: "rgba(118,75,162,0.9)",
-    },
-    buttonRow: {
-      display: "flex",
-      gap: 12,
-      flexWrap: "wrap",
-      marginTop: 20,
-    },
-    buttonPrimary: {
-      background: "linear-gradient(135deg, #6c63ff 0%, #b074ff 100%)",
-      color: "#fff",
-      border: "none",
-      padding: "12px 22px",
-      borderRadius: 999,
-      fontWeight: 600,
-      cursor: "pointer",
-      boxShadow: "0 12px 24px rgba(102, 86, 214, 0.35)",
-      transition: "transform 0.2s ease, box-shadow 0.2s ease",
-    },
-    buttonGhost: {
-      background: "rgba(255,255,255,0.6)",
-      color: "#4a3f72",
-      border: "1px solid rgba(120,120,140,0.2)",
-      padding: "12px 22px",
-      borderRadius: 999,
-      fontWeight: 600,
-      cursor: "pointer",
-    },
-    previewImage: {
-      width: "100%",
-      maxHeight: 340,
-      objectFit: "cover",
-      borderRadius: 20,
-      boxShadow: "0 18px 40px rgba(48, 30, 90, 0.2)",
-      marginTop: 18,
-    },
-    shimmer: {
-      height: 160,
-      borderRadius: 18,
-      background:
-        "linear-gradient(110deg, rgba(120,120,140,0.1) 8%, rgba(140,120,200,0.25) 18%, rgba(120,120,140,0.1) 33%)",
-      backgroundSize: "200% 100%",
-      animation: "shimmer 1.4s infinite",
-    },
-    spinner: {
-      width: 44,
-      height: 44,
-      borderRadius: "50%",
-      border: "4px solid rgba(118,75,162,0.2)",
-      borderTopColor: "#6c63ff",
-      animation: "spin 1s linear infinite",
-      margin: "0 auto 12px",
-    },
-    error: {
-      background: "rgba(255, 208, 208, 0.7)",
-      border: "1px solid rgba(186, 45, 45, 0.2)",
-      color: "#7a1e1e",
-      padding: "12px 16px",
-      borderRadius: 12,
-    },
-  };
+  page: {
+    minHeight: "100vh",
+    background: "#0f0f0f",
+    padding: "48px 20px",
+    fontFamily: "Inter, sans-serif",
+    color: "#f5f5f5",
+  },
+
+  shell: {
+    maxWidth: 1000,
+    margin: "0 auto",
+  },
+
+  header: {
+    textAlign: "center",
+    marginBottom: 40,
+  },
+
+  title: {
+    fontSize: "2.5rem",
+    margin: 0,
+    fontWeight: 600,
+    letterSpacing: "-0.03em",
+  },
+
+  tagline: {
+    marginTop: 8,
+    color: "#a1a1a1",
+    fontSize: "0.95rem",
+  },
+
+  card: {
+    background: "#1a1a1a",
+    borderRadius: 12,
+    padding: "28px",
+    border: "1px solid #2a2a2a",
+  },
+
+  stepper: {
+    display: "flex",
+    gap: 12,
+    justifyContent: "center",
+    marginBottom: 24,
+  },
+
+  stepBadge: (active) => ({
+    padding: "6px 12px",
+    borderRadius: 6,
+    fontSize: "0.8rem",
+    background: active ? "#ffffff" : "#2a2a2a",
+    color: active ? "#000" : "#aaa",
+  }),
+
+  uploadZone: {
+    border: "1px dashed #3a3a3a",
+    borderRadius: 10,
+    padding: "36px",
+    textAlign: "center",
+    background: "#141414",
+    cursor: "pointer",
+  },
+
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+    gap: 14,
+    marginTop: 18,
+  },
+
+  toneCard: (active) => ({
+    padding: 16,
+    borderRadius: 10,
+    border: active ? "1px solid #fff" : "1px solid #2a2a2a",
+    background: "#161616",
+    cursor: "pointer",
+    transition: "all 0.2s ease",
+  }),
+
+  toneIcon: {
+    marginBottom: 8,
+  },
+
+  captionGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+    gap: 14,
+    marginTop: 18,
+  },
+
+  captionCard: {
+    background: "#141414",
+    border: "1px solid #2a2a2a",
+    padding: 16,
+    borderRadius: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+
+  captionIndex: {
+    fontSize: "0.8rem",
+    color: "#888",
+  },
+
+  buttonRow: {
+    marginTop: 20,
+  },
+
+  buttonPrimary: {
+    background: "#ffffff",
+    color: "#000",
+    border: "none",
+    padding: "10px 18px",
+    borderRadius: 6,
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+
+  buttonGhost: {
+    background: "transparent",
+    color: "#ddd",
+    border: "1px solid #2a2a2a",
+    padding: "8px 14px",
+    borderRadius: 6,
+    cursor: "pointer",
+  },
+
+  previewImage: {
+    width: "100%",
+    maxHeight: 320,
+    objectFit: "cover",
+    borderRadius: 8,
+    marginTop: 16,
+  },
+
+  spinner: {
+    width: 32,
+    height: 32,
+    borderRadius: "50%",
+    border: "3px solid #2a2a2a",
+    borderTopColor: "#fff",
+    animation: "spin 1s linear infinite",
+    margin: "0 auto",
+  },
+
+  error: {
+    marginTop: 12,
+    background: "#2a1a1a",
+    color: "#ff7b7b",
+    padding: "10px",
+    borderRadius: 6,
+  },
+};
 
   return (
     <div style={styles.page}>
@@ -425,17 +505,23 @@ export default function Home() {
             Transform any image into polished, on-brand captions with a single
             flow.
           </p>
+          <div style={{ display: 'inline-flex', background: '#1a1a1a', padding: 4, borderRadius: 24, margin: '20px auto 0', border: '1px solid #2a2a2a' }}>
+            <button onClick={() => { setIsStoryMode(false); resetAll(); }} style={{ padding: '8px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', background: !isStoryMode ? '#6c63ff' : 'transparent', color: !isStoryMode ? '#fff' : '#888', fontWeight: 600, transition: "0.2s" }}>Standard Mode</button>
+            <button onClick={() => { setIsStoryMode(true); resetAll(); }} style={{ padding: '8px 16px', borderRadius: 20, border: 'none', cursor: 'pointer', background: isStoryMode ? '#6c63ff' : 'transparent', color: isStoryMode ? '#fff' : '#888', fontWeight: 600, transition: "0.2s" }}>Story Mode</button>
+          </div>
         </header>
 
         <section style={styles.card}>
           <div style={styles.stepper}>
-            {["Upload Image", "Select Tone", "View Captions"].map(
-              (label, index) => (
+            {isStoryMode 
+              ? ["Upload up to 5 Images", "Generate", "Read Story"].map((label, index) => (
+                  <span key={label} style={styles.stepBadge(step === index + 1)}>{index + 1}. {label}</span>
+                ))
+              : ["Upload Image", "Select Tone", "View Captions"].map((label, index) => (
                 <span key={label} style={styles.stepBadge(step === index + 1)}>
                   {index + 1}. {label}
                 </span>
-              ),
-            )}
+              ))}
           </div>
 
           <div style={{ display: "grid", gap: 24 }}>
@@ -461,18 +547,80 @@ export default function Home() {
               <input
                 ref={inputRef}
                 type="file"
+                multiple={isStoryMode}
                 accept="image/*"
                 onChange={onFileChange}
                 style={{ display: "none" }}
               />
             </div>
 
-            {preview ? (
+            {preview && isStoryMode ? (
+              <div style={{ display: 'flex', gap: 10, overflowX: 'auto', marginTop: 16 }}>
+                 {preview.map((src, i) => <img key={i} src={src} alt="Preview" style={{ height: 120, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }} />)}
+              </div>
+            ) : preview && !isStoryMode ? (
               <img src={preview} alt="Preview" style={styles.previewImage} />
             ) : null}
 
-            {file ? (
+            {(isStoryMode && storyFiles.length > 0) ? (
+               <div>
+                  <h2 style={{ fontFamily: '"Playfair Display", serif', marginBottom: 6 }}>Narrative AI</h2>
+                  <p style={{ marginTop: 0, color: "#585070" }}>Combine {storyFiles.length} images into a unique generated story.</p>
+                  
+                  {!storyLoading && !storyResult && (
+                      <button style={{...styles.buttonPrimary, padding: "12px 24px"}} onClick={generateStory}>
+                        <BookOpen size={16} style={{verticalAlign: 'text-bottom', marginRight: 8}} /> Generate Story
+                      </button>
+                  )}
+
+                  {storyLoading && (
+                      <div style={{ marginTop: 24, textAlign: "center" }}>
+                        <div style={styles.spinner} />
+                        <p style={{ color: "#585070" }}>Weaving your narrative...</p>
+                      </div>
+                  )}
+
+                  {storyError && <div style={styles.error}>{storyError}</div>}
+
+                  {storyResult && (
+                     <div style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", padding: 24, borderRadius: 12, marginTop: 20 }}>
+                        <p style={{ fontSize: '1.2rem', lineHeight: '1.6', fontFamily: 'Georgia, serif', color: '#fff', margin: 0 }}>
+                           {displayedStory}
+                           <span style={{ display: 'inline-block', width: 8, height: 16, background: '#6c63ff', marginLeft: 4, animation: 'pulse 1s infinite' }}></span>
+                        </p>
+                        <button style={{...styles.buttonGhost, marginTop: 24}} onClick={resetAll}>Start Over</button>
+                     </div>
+                  )}
+               </div>
+            ) : null}
+
+            {(!isStoryMode && file) ? (
               <div>
+                <div style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: 10, padding: 20, marginBottom: 30 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
+                    <div>
+                      <h3 style={{ margin: 0 }}>Content Moderation</h3>
+                      <p style={{ margin: "4px 0 0", color: "#888", fontSize: "0.9rem" }}>Check if the uploaded image is safe for work.</p>
+                    </div>
+                    {!nsfwResult && !nsfwLoading && (
+                       <button style={styles.buttonPrimary} onClick={checkSafety}>Check Image Safety</button>
+                    )}
+                    {nsfwLoading && (
+                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div style={{...styles.spinner, width: 20, height: 20, borderWidth: 2}}></div><span style={{color: "#888"}}>Analyzing...</span></div>
+                    )}
+                  </div>
+                  {nsfwError && <div style={styles.error}>{nsfwError}</div>}
+                  {nsfwResult && (
+                      <div style={{ marginTop: 16, padding: 16, borderRadius: 8, background: nsfwResult.safe ? "rgba(31, 157, 85, 0.1)" : "rgba(255, 123, 123, 0.1)", border: `1px solid ${nsfwResult.safe ? "#1f9d55" : "#ff7b7b"}`, display: "flex", alignItems: "center", gap: 12 }}>
+                        {nsfwResult.safe ? <ShieldCheck size={28} color="#1f9d55" /> : <ShieldAlert size={28} color="#ff7b7b" />}
+                        <div>
+                           <h4 style={{ margin: 0, color: nsfwResult.safe ? "#1f9d55" : "#ff7b7b" }}>{nsfwResult.safe ? "Safe Image" : "Unsafe Image"}</h4>
+                           <p style={{ margin: "4px 0 0", fontSize: "0.85rem", color: "#ccc" }}>Confidence: {(nsfwResult.safe ? nsfwResult.details.normal : nsfwResult.details.nsfw).toFixed(2)}</p>
+                        </div>
+                      </div>
+                  )}
+                </div>
+
                 <h2
                   style={{
                     fontFamily: '"Playfair Display", serif',

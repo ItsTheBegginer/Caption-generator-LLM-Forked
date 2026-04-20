@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
@@ -6,6 +7,7 @@ import io
 from model_loader import load_model
 from caption_generator import generate_captions
 from nsfw_detector import load_nsfw_model, detect_nsfw
+from story_engine import build_story
 
 # ----------------------------
 # Create FastAPI App
@@ -97,6 +99,45 @@ async def check_nsfw(file: UploadFile = File(...)):
         return {
             "status": "success",
             "result": result
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+# ----------------------------
+# Generate Story Endpoint
+# ----------------------------
+
+@app.post("/generate-story")
+async def generate_story(files: List[UploadFile] = File(...)):
+    if processor is None or model is None:
+        return {"error": "Model not loaded properly."}
+
+    if len(files) > 5:
+        return {"error": "Maximum of 5 images allowed for story generation."}
+
+    try:
+        captions = []
+        for file in files:
+            contents = await file.read()
+            image = Image.open(io.BytesIO(contents)).convert("RGB")
+            # Generate a simple informative caption to use for the story
+            generated = generate_captions(image, processor, model, "informative")
+            if generated and len(generated) > 0:
+                captions.append(generated[0])
+            else:
+                captions.append("an image")
+
+        story = build_story(captions)
+
+        return {
+            "status": "success",
+            "captions": captions,
+            "story": story
         }
 
     except Exception as e:
